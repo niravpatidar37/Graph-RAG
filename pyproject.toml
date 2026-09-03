@@ -1,0 +1,39 @@
+[project]
+name = "graph-rag"
+version = "0.1.0"
+description = "A small, dependency-light Graph RAG starter"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+	"datasets>=5.0.1",
+	"fastapi>=0.115",
+	"huggingface-hub>=0.30",
+	"langfuse>=3.0",
+	"langchain-community>=0.3,<0.4",
+	"langchain-openai>=0.3,<0.4",
+	"neo4j>=5.28",
+	"python-dotenv>=1.0",
+	"qdrant-client>=1.14",
+	"redis>=5.0",
+	"ragas>=0.2,<0.3",
+	"uvicorn[standard]>=0.34",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+graph-rag = "graph_rag.cli:main"
+graph-rag-ingest = "graph_rag.ingest:main"
+graph-rag-api = "graph_rag.api:main"
+graph-rag-dataset = "graph_rag.dataset_ingest:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
