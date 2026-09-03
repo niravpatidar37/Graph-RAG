@@ -1,0 +1,49 @@
+[
+  {
+    "id": "direct_institution_001",
+    "question": "Which institution is associated with A General Language Assistant as a Laboratory for Alignment?",
+    "expected_entities": ["Anthropic"],
+    "expected_relationships": ["AFFILIATED_WITH"],
+    "expected_sources": ["https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"],
+    "expected_answer_contains": ["Anthropic"]
+  },
+  {
+    "id": "direct_classification_001",
+    "question": "How is A General Language Assistant as a Laboratory for Alignment classified?",
+    "expected_entities": ["alignment_pre_deployment"],
+    "expected_relationships": ["CLASSIFIED_AS"],
+    "expected_sources": ["https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"],
+    "expected_answer_contains": ["alignment_pre_deployment"]
+  },
+  {
+    "id": "institution_paper_001",
+    "question": "Which institution is associated with A Mathematical Framework for Transformer Circuits?",
+    "expected_entities": ["Anthropic"],
+    "expected_relationships": ["AFFILIATED_WITH"],
+    "expected_sources": ["https://openalex.org/W4296558812"],
+    "expected_answer_contains": ["Anthropic"]
+  },
+  {
+    "id": "organization_classification_001",
+    "question": "How is A hazard analysis framework for code synthesis large language models classified?",
+    "expected_entities": ["testing_and_evaluation"],
+    "expected_relationships": ["CLASSIFIED_AS"],
+    "expected_sources": ["https://openai.com/research/a-hazard-analysis-framework-for-code-synthesis-large-language-models"],
+    "expected_answer_contains": ["testing_and_evaluation"]
+  },
+  {
+    "id": "graph_path_001",
+    "question": "Which institution is associated with A Mathematical Framework for Transformer Circuits, classified as interpretability and transparency?",
+    "expected_entities": ["interpretability_and_transparency", "Anthropic"],
+    "expected_relationships": ["CLASSIFIED_AS", "AFFILIATED_WITH"],
+    "expected_sources": ["https://openalex.org/W4296558812"],
+    "expected_answer_contains": ["Anthropic"]
+  },
+  {
+    "id": "no_answer_001",
+    "question": "Which papers in this dataset were published by NASA?",
+    "expected_entities": ["NASA"],
+    "expected_relationships": [],
+    "no_answer": true
+  }
+]
