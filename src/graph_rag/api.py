@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import json
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .pipeline import CloudGraphRAG
@@ -69,14 +71,34 @@ function fill(list, values, formatter) {
 form.addEventListener('submit', async event => {
     event.preventDefault();
     button.disabled = true;
-    answer.textContent = 'Searching evidence...';
+    answer.textContent = '';
+    fill(sources, []);
+    fill(facts, []);
     try {
-        const response = await fetch('/query', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: input.value, limit: 8}) });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Query failed');
-        answer.textContent = data.answer;
-        fill(sources, data.sources || [], source => source.document_id + ' (score ' + Number(source.score).toFixed(3) + ')\\n' + source.text);
-        fill(facts, data.graph_facts || []);
+        const response = await fetch('/query/stream', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: input.value, limit: 8}) });
+        if (!response.ok) throw new Error('Query failed');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split('\\n\\n');
+            buffer = events.pop();
+            for (const raw of events) {
+                if (!raw.startsWith('data: ')) continue;
+                const data = JSON.parse(raw.slice(6));
+                if (data.type === 'evidence') {
+                    fill(sources, data.sources || [], source => source.document_id + ' (score ' + Number(source.score).toFixed(3) + ')\\n' + source.text);
+                    fill(facts, data.graph_facts || []);
+                } else if (data.type === 'token') {
+                    answer.textContent += data.text;
+                } else if (data.type === 'error') {
+                    throw new Error(data.detail || 'Query failed');
+                }
+            }
+        }
     } catch (error) {
         answer.textContent = error.message;
     } finally { button.disabled = false; }
@@ -119,6 +141,18 @@ def query(request: QueryRequest) -> QueryResponse:
         return QueryResponse(**get_pipeline().query_result(request.question, request.limit))
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/query/stream")
+def query_stream(request: QueryRequest) -> StreamingResponse:
+    def events():
+        try:
+            for event in get_pipeline().query_stream(request.question, request.limit):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as error:  # a broken stream must still close with an error event, not a silent truncation
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(error)})}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 def main() -> None:

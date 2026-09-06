@@ -27,40 +27,37 @@ class Neo4jStore:
         self.driver.close()
 
     def upsert_chunk(self, chunk: Chunk, relations: list[dict[str, Any]]) -> None:
+        edges = [
+            {
+                "source": str(relation.get("source", "")).strip(),
+                "target": str(relation.get("target", "")).strip(),
+                "predicate": str(relation.get("predicate", "") or "RELATED"),
+                "confidence": float(relation.get("confidence", 0)),
+            }
+            for relation in relations
+        ]
+        edges = [edge for edge in edges if edge["source"] and edge["target"]]
         with self.driver.session() as session:
             session.run(
                 "MERGE (d:Document {id: $document}) "
                 "MERGE (c:Chunk {id: $chunk}) SET c.text = $text "
-                "MERGE (c)-[:FROM_DOCUMENT]->(d)",
-                document=chunk.document, chunk=chunk.id, text=chunk.text,
+                "MERGE (c)-[:FROM_DOCUMENT]->(d) "
+                "WITH c UNWIND $entities AS name "
+                "MERGE (e:Entity {name: name}) "
+                "MERGE (c)-[:MENTIONS]->(e)",
+                document=chunk.document, chunk=chunk.id, text=chunk.text, entities=chunk.entities,
             )
-            for entity in chunk.entities:
+            if edges:
                 session.run(
-                    "MERGE (e:Entity {name: $name}) "
-                    "WITH e MATCH (c:Chunk {id: $chunk}) MERGE (c)-[:MENTIONS]->(e)",
-                    name=entity, chunk=chunk.id,
-                )
-            for relation in relations:
-                session.run(
-                    "MERGE (source:Entity {name: $source}) "
-                    "MERGE (target:Entity {name: $target}) "
-                    "MERGE (source)-[r:RELATED {predicate: $predicate}]->(target) "
-                    "SET r.confidence = $confidence, r.chunk_id = $chunk",
-                    source=relation.get("source", ""), target=relation.get("target", ""),
-                    predicate=relation.get("predicate", "RELATED"),
-                    confidence=float(relation.get("confidence", 0)), chunk=chunk.id,
+                    "UNWIND $edges AS edge "
+                    "MERGE (source:Entity {name: edge.source}) "
+                    "MERGE (target:Entity {name: edge.target}) "
+                    "MERGE (source)-[r:RELATED {predicate: edge.predicate}]->(target) "
+                    "SET r.confidence = edge.confidence, r.chunk_id = $chunk",
+                    edges=edges, chunk=chunk.id,
                 )
 
-    def neighbors(self, entities: list[str], limit: int = 20) -> list[str]:
-        with self.driver.session() as session:
-            records = session.run(
-                "MATCH (e:Entity)-[:RELATED]-(neighbor:Entity) "
-                "WHERE e.name IN $entities RETURN DISTINCT neighbor.name AS name LIMIT $limit",
-                entities=entities, limit=limit,
-            )
-            return [record["name"] for record in records]
-
-    def facts(self, entities: list[str], limit: int = 50) -> list[str]:
+    def facts(self, entities: list[str], limit: int = 50) -> list[dict[str, str]]:
         if not entities:
             return []
         with self.driver.session() as session:
@@ -71,26 +68,24 @@ class Neo4jStore:
                 "target.name AS target LIMIT $limit",
                 entities=entities, limit=limit,
             )
-            return [
-                f"{record['source']} -[{record['predicate']}]-> {record['target']}"
-                for record in records
-            ]
+            return [{"source": record["source"], "predicate": record["predicate"], "target": record["target"]} for record in records]
 
 
 class QdrantStore:
     def __init__(self, url: str, api_key: str, collection: str) -> None:
         self.client = QdrantClient(url=url, api_key=api_key)
         self.collection = collection
+        self._ready = False
 
     def ensure_collection(self, vector_size: int) -> None:
+        if self._ready:
+            return
         if not self.client.collection_exists(self.collection):
             self.client.create_collection(
                 collection_name=self.collection,
                 vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
             )
-
-    def upsert(self, chunk: Chunk, vector: list[float]) -> None:
-        self.upsert_batch([(chunk, vector)])
+        self._ready = True
 
     def upsert_batch(self, items: list[tuple[Chunk, list[float]]]) -> None:
         if not items:

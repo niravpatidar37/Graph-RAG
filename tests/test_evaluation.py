@@ -1,4 +1,4 @@
-from graph_rag.evaluation import mean_metric, retrieval_metrics
+from evaluation.evaluate import mean_metric, retrieval_metrics
 
 
 def test_retrieval_metrics_calculates_precision_recall_and_mrr() -> None:

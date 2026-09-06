@@ -9,19 +9,27 @@ dependencies = [
 	"fastapi>=0.115",
 	"huggingface-hub>=0.30",
 	"langfuse>=3.0",
-	"langchain-community>=0.3,<0.4",
 	"langchain-openai>=0.3,<0.4",
 	"neo4j>=5.28",
 	"python-dotenv>=1.0",
 	"qdrant-client>=1.14",
-	"redis>=5.0",
 	"ragas>=0.2,<0.3",
 	"uvicorn[standard]>=0.34",
+	"sentence-transformers>=6.0.1",
+	"torch>=2.2",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [project.scripts]
 graph-rag = "graph_rag.cli:main"
@@ -33,7 +41,7 @@ graph-rag-dataset = "graph_rag.dataset_ingest:main"
 dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.setuptools.packages.find]
 where = ["src"]

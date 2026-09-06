@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from datasets import load_dataset
@@ -43,19 +42,6 @@ def main() -> None:
 
     service.run_pending()
     print(f"Indexed {indexed} AI Safety records; skipped {skipped} checkpointed records.")
-
-
-def _load_checkpoint(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    return set(json.loads(path.read_text(encoding="utf-8")))
-
-
-def _save_checkpoint(path: Path, processed: set[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(sorted(processed), indent=2), encoding="utf-8")
-    temporary.replace(path)
 
 
 def _ingest_record(pipeline: CloudGraphRAG, record: dict[str, object], include_llm_relations: bool, record_id: str, checkpoint: IngestionCheckpoint) -> str:
