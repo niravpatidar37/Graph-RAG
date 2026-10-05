@@ -5,12 +5,24 @@ from functools import lru_cache
 import json
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .brand import FAVICON_SVG, THEME_COLOR
 from .pipeline import CloudGraphRAG
 
 app = FastAPI(title="Graph RAG API", version="0.1.0")
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon() -> Response:
+    # Static, build-time constant (see docs/brand/tools/build_brand.py, which rejects scripts,
+    # event handlers and external references); nosniff keeps browsers from reinterpreting it.
+    return Response(
+        FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -21,6 +33,9 @@ def home() -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Graph RAG</title>
+    <meta name="description" content="Ask questions answered from indexed documents and the relationships between them, with sources and graph facts.">
+    <meta name="theme-color" content="THEME_COLOR_PLACEHOLDER">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>
         :root { color-scheme: light; font-family: Georgia, serif; }
         body { margin: 0; background: #eef2f0; color: #17221f; }
@@ -35,11 +50,14 @@ def home() -> str:
         pre { white-space: pre-wrap; font: 1rem/1.55 system-ui, sans-serif; }
         ul { padding-left: 20px; font-family: system-ui, sans-serif; }
         .muted { color: #687a73; }
+        .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+        .brand img { width: 40px; height: 40px; }
+        .brand p { margin: 0; }
     </style>
 </head>
 <body>
 <main>
-    <p class="muted">EVIDENCE-GROUNDED KNOWLEDGE SEARCH</p>
+    <div class="brand"><img src="/favicon.svg" alt="Graph RAG logo"><p class="muted">EVIDENCE-GROUNDED KNOWLEDGE SEARCH</p></div>
     <h1>Ask the graph.</h1>
     <p>Questions are answered from indexed documents and their relationships.</p>
     <form id="query-form">
@@ -105,7 +123,7 @@ form.addEventListener('submit', async event => {
 });
 </script>
 </body>
-</html>"""
+</html>""".replace("THEME_COLOR_PLACEHOLDER", THEME_COLOR)
 
 
 class QueryRequest(BaseModel):
