@@ -155,8 +155,9 @@ def test_upsert_chunk_unwinds_entities_and_drops_empty_edges(monkeypatch) -> Non
     ])
 
     assert len(queries) == 2
-    assert queries[0][1]["entities"] == ["Alice", "Acme"]
+    assert queries[0][1]["rows"][0]["entities"] == ["Alice", "Acme"]
     assert [edge["source"] for edge in queries[1][1]["edges"]] == ["Alice"]
+    assert queries[1][1]["edges"][0]["chunk"] == chunk.id
 
 
 def test_neo4j_facts_returns_structured_rows(monkeypatch) -> None:
@@ -167,7 +168,7 @@ def test_neo4j_facts_returns_structured_rows(monkeypatch) -> None:
         def __enter__(self): return self
         def __exit__(self, *args): return False
         def run(self, query: str, **params):
-            return [FakeRecord(source="Alice", predicate="WORKS_AT", target="Acme")]
+            return [FakeRecord(source="Alice", predicate="WORKS_AT", target="Acme", other="Acme", degree=1, rank=0)]
 
     monkeypatch.setattr(
         "graph_rag.stores.GraphDatabase",
@@ -175,7 +176,7 @@ def test_neo4j_facts_returns_structured_rows(monkeypatch) -> None:
     )
     store = Neo4jStore("bolt://x", "u", "p")
 
-    assert store.facts(["Alice"]) == [{"source": "Alice", "predicate": "WORKS_AT", "target": "Acme"}]
+    assert store.facts(["Alice"]) == [{"source": "Alice", "predicate": "WORKS_AT", "target": "Acme", "hop": 1}]
     assert store.facts([]) == []
 
 

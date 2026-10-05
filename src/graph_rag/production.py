@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
 @dataclass
@@ -22,6 +22,11 @@ class IngestionCheckpoint:
 
     def mark_processed(self, record_id: str) -> None:
         self.processed.add(record_id)
+        self.save()
+
+    def mark_many(self, record_ids: Iterable[str]) -> None:
+        """Mark a whole batch with one atomic write."""
+        self.processed.update(record_ids)
         self.save()
 
     def save(self) -> None:
@@ -59,31 +64,49 @@ class InMemoryJobQueue:
                     raise
 
 
-def rerank_evidence(question: str, hits: list[dict[str, Any]], entities: list[str] | None = None, limit: int = 10) -> list[dict[str, Any]]:
-    stop_words = {"a", "an", "and", "are", "as", "at", "based", "by", "for", "how", "is", "of", "the", "which", "with"}
+_RERANK_STOP_WORDS = frozenset(
+    "a an and are as at based be by did does for from has have how in is it its of on or that the this to was what when where which who why with".split()
+)
+
+
+def rerank_evidence(question: str, hits: list[dict[str, Any]], entities: list[str] | None = None, limit: int = 10,
+                    entity_weight: float = 0.35, term_weight: float = 0.25, graph_weight: float = 0.3) -> list[dict[str, Any]]:
+    """Blend vector similarity with how much of the question's entities and terms a chunk covers.
+
+    Both bonuses are fractions in [0, 1], so they nudge the cosine score instead of drowning
+    it: the earlier per-match bonus (+2.0 per entity, +1.5 per word) let any chunk sharing
+    common words like "language" or "models" outrank the chunk that actually answers.
+    The raw cosine score is kept as `similarity` so clients can show both. Chunks reached
+    through the graph (`via_graph`: they mention an entity the question names) get a fixed
+    bonus, because their text often lacks the very words that connect them to the question.
+    """
     query_terms = {
         token.lower() for token in re.findall(r"[A-Za-z0-9]+", question)
-        if token.lower() not in stop_words and len(token) > 2
+        if token.lower() not in _RERANK_STOP_WORDS and len(token) > 2
     }
-    entity_names = [entity.lower() for entity in (entities or []) if entity]
+    entity_names = list(dict.fromkeys(entity.lower() for entity in (entities or []) if entity and len(entity) > 1))
     scored: list[tuple[float, dict[str, Any]]] = []
     for hit in hits:
         text_lower = str(hit.get("text", "")).lower()
-        score = float(hit.get("score", 0.0))
-        score += sum(1 for entity in entity_names if entity in text_lower) * 2.0
-        score += sum(1 for term in query_terms if term in text_lower) * 1.5
-        scored.append((score, {**hit, "score": score}))
+        similarity = float(hit.get("score", 0.0))
+        entity_cover = sum(1 for entity in entity_names if entity in text_lower) / len(entity_names) if entity_names else 0.0
+        term_cover = sum(1 for term in query_terms if term in text_lower) / len(query_terms) if query_terms else 0.0
+        score = similarity + entity_weight * entity_cover + term_weight * term_cover + (graph_weight if hit.get("via_graph") else 0.0)
+        scored.append((score, {**hit, "score": round(score, 6), "similarity": similarity}))
     return [hit for _, hit in sorted(scored, key=lambda item: item[0], reverse=True)][:limit]
 
 
 def should_refuse_answer(context: str, answer: str) -> bool:
-    cleaned_answer = (answer or "").strip().lower()
+    cleaned_answer = (answer or "").strip().lower().replace("\u2019", "'")
     if not (context or "").strip() or not cleaned_answer:
         return True
     return any(marker in cleaned_answer for marker in (
         "i don't know",
+        "i do not know",
         "cannot determine",
         "not enough information",
+        "don't have enough",
+        "do not have enough",
         "insufficient evidence",
         "unable to determine",
     ))

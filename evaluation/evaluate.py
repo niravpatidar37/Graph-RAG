@@ -34,6 +34,32 @@ def mean_metric(rows: Sequence[dict[str, float | None]], name: str) -> float | N
     return sum(values) / len(values) if values else None
 
 
+def check_golden_sources(pipeline: CloudGraphRAG, cases: Sequence[dict[str, Any]]) -> list[str]:
+    """Catch mislabelled ground truth before it turns into fake passes or fake failures.
+
+    Every expected source must exist in the graph, and when its chunk starts with a
+    "Title:" line, that title should appear in the question (the golden questions name the
+    paper; multi-hop cases that deliberately don't set `"question_names_title": false`).
+    A wrong source ID once matched an unrelated paper that merely shared a word.
+    """
+    problems: list[str] = []
+    with pipeline.graph.driver.session() as session:
+        for case in cases:
+            for source in case.get("expected_sources", []):
+                record = session.run(
+                    "MATCH (d:Document {id: $id})<-[:FROM_DOCUMENT]-(c:Chunk) RETURN c.text AS text LIMIT 1", id=source,
+                ).single()
+                if record is None:
+                    problems.append(f"{case['id']}: expected source {source} is not indexed")
+                    continue
+                first_line = str(record["text"]).split("\n", 1)[0]
+                if first_line.startswith("Title: ") and case.get("question_names_title", True):
+                    title = first_line.removeprefix("Title: ").strip()
+                    if title and title.lower() not in str(case["question"]).lower():
+                        problems.append(f"{case['id']}: expected source {source} is titled {title!r}, which the question doesn't name")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate Graph RAG retrieval against a reviewed golden set.")
     parser.add_argument("--file", type=Path, default=Path("evaluation/golden_questions.json"))
@@ -41,10 +67,17 @@ def main() -> None:
     parser.add_argument("--report", type=Path, default=Path(".graph-rag/evaluation-report.json"))
     parser.add_argument("--answers", action="store_true", help="Evaluate generated answers in addition to retrieval metrics")
     parser.add_argument("--ragas", action="store_true", help="Run RAGAS faithfulness, answer relevance, and context metrics after retrieval evaluation")
+    parser.add_argument("--skip-golden-check", action="store_true", help="Don't verify that expected sources exist and match the question")
     args = parser.parse_args()
 
     cases = json.loads(args.file.read_text(encoding="utf-8"))
     pipeline = CloudGraphRAG.from_env()
+    if not args.skip_golden_check:
+        problems = check_golden_sources(pipeline, cases)
+        for problem in problems:
+            print(f"GOLDEN {problem}")
+        if problems:
+            raise SystemExit("Golden set check failed; fix the expected sources or pass --skip-golden-check.")
     passed = 0
     report: list[dict[str, object]] = []
     retrieval_rows: list[dict[str, float | None]] = []
