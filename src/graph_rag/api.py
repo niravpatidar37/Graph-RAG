@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from functools import lru_cache
-
 import json
+from functools import lru_cache
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from .brand import FAVICON_SVG, THEME_COLOR
+from .brand import FAVICON_SVG
 from .pipeline import CloudGraphRAG
+from .ui import PAGE, SECURITY_HEADERS
 
-app = FastAPI(title="Graph RAG API", version="0.1.0")
+app = FastAPI(title="Graph RAG API", version="0.2.0")
+
+MAX_QUESTION_CHARS = 2000
 
 
 @app.get("/favicon.svg", include_in_schema=False)
@@ -26,116 +29,23 @@ def favicon() -> Response:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home() -> str:
-        return """<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Graph RAG</title>
-    <meta name="description" content="Ask questions answered from indexed documents and the relationships between them, with sources and graph facts.">
-    <meta name="theme-color" content="THEME_COLOR_PLACEHOLDER">
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <style>
-        :root { color-scheme: light; font-family: Georgia, serif; }
-        body { margin: 0; background: #eef2f0; color: #17221f; }
-        main { max-width: 900px; margin: 0 auto; padding: 8vh 24px; }
-        h1 { font-size: clamp(2.5rem, 7vw, 5.5rem); line-height: .95; margin: 0 0 12px; }
-        p { color: #52635e; font: 1rem/1.5 system-ui, sans-serif; }
-        form { display: flex; gap: 10px; margin: 32px 0; }
-        input { flex: 1; min-width: 0; padding: 15px 16px; border: 1px solid #aabbb4; border-radius: 6px; font-size: 1rem; }
-        button { padding: 15px 22px; border: 0; border-radius: 6px; background: #17624f; color: white; font-weight: 700; cursor: pointer; }
-        button:disabled { opacity: .55; cursor: wait; }
-        section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #c4d0cb; }
-        pre { white-space: pre-wrap; font: 1rem/1.55 system-ui, sans-serif; }
-        ul { padding-left: 20px; font-family: system-ui, sans-serif; }
-        .muted { color: #687a73; }
-        .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
-        .brand img { width: 40px; height: 40px; }
-        .brand p { margin: 0; }
-    </style>
-</head>
-<body>
-<main>
-    <div class="brand"><img src="/favicon.svg" alt="Graph RAG logo"><p class="muted">EVIDENCE-GROUNDED KNOWLEDGE SEARCH</p></div>
-    <h1>Ask the graph.</h1>
-    <p>Questions are answered from indexed documents and their relationships.</p>
-    <form id="query-form">
-        <input id="question" required placeholder="Ask a question about the indexed documents" autocomplete="off">
-        <button id="submit" type="submit">Ask</button>
-    </form>
-    <section>
-        <h2>Answer</h2>
-        <pre id="answer" class="muted">Your answer will appear here.</pre>
-    </section>
-    <section><h2>Sources</h2><ul id="sources"><li class="muted">No sources yet.</li></ul></section>
-    <section><h2>Graph facts</h2><ul id="facts"><li class="muted">No graph facts yet.</li></ul></section>
-</main>
-<script>
-const form = document.getElementById('query-form');
-const input = document.getElementById('question');
-const button = document.getElementById('submit');
-const answer = document.getElementById('answer');
-const sources = document.getElementById('sources');
-const facts = document.getElementById('facts');
-function fill(list, values, formatter) {
-    list.replaceChildren();
-    (values.length ? values : ['None returned.']).forEach(value => {
-        const item = document.createElement('li');
-        item.textContent = formatter ? formatter(value) : value;
-        list.appendChild(item);
-    });
-}
-form.addEventListener('submit', async event => {
-    event.preventDefault();
-    button.disabled = true;
-    answer.textContent = '';
-    fill(sources, []);
-    fill(facts, []);
-    try {
-        const response = await fetch('/query/stream', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: input.value, limit: 8}) });
-        if (!response.ok) throw new Error('Query failed');
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const events = buffer.split('\\n\\n');
-            buffer = events.pop();
-            for (const raw of events) {
-                if (!raw.startsWith('data: ')) continue;
-                const data = JSON.parse(raw.slice(6));
-                if (data.type === 'evidence') {
-                    fill(sources, data.sources || [], source => source.document_id + ' (score ' + Number(source.score).toFixed(3) + ')\\n' + source.text);
-                    fill(facts, data.graph_facts || []);
-                } else if (data.type === 'token') {
-                    answer.textContent += data.text;
-                } else if (data.type === 'error') {
-                    throw new Error(data.detail || 'Query failed');
-                }
-            }
-        }
-    } catch (error) {
-        answer.textContent = error.message;
-    } finally { button.disabled = false; }
-});
-</script>
-</body>
-</html>""".replace("THEME_COLOR_PLACEHOLDER", THEME_COLOR)
+def home() -> HTMLResponse:
+    return HTMLResponse(PAGE, headers=SECURITY_HEADERS)
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=1)
+    # Capped so a single request can't push megabytes through NER, embedding and the prompt.
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     limit: int = Field(default=8, ge=1, le=50)
 
 
 class QueryResponse(BaseModel):
     answer: str
-    sources: list[dict[str, object]]
+    sources: list[dict[str, Any]]
     graph_facts: list[str]
     retrieved_entities: list[str]
+    graph: dict[str, Any] = Field(default_factory=lambda: {"nodes": [], "edges": []})
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 @lru_cache(maxsize=1)
@@ -170,10 +80,16 @@ def query_stream(request: QueryRequest) -> StreamingResponse:
         except Exception as error:  # a broken stream must still close with an error event, not a silent truncation
             yield f"data: {json.dumps({'type': 'error', 'detail': str(error)})}\n\n"
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
 def main() -> None:
+    import os
+
     import uvicorn
 
-    uvicorn.run("graph_rag.api:app", host="0.0.0.0", port=8000, reload=False)
+    # Loopback by default: the API has no authentication, so exposing it on every interface
+    # should be a deliberate choice (GRAPH_RAG_HOST=0.0.0.0 inside a container, behind a proxy).
+    host = os.environ.get("GRAPH_RAG_HOST", "127.0.0.1")
+    port = int(os.environ.get("GRAPH_RAG_PORT", "8000"))
+    uvicorn.run("graph_rag.api:app", host=host, port=port, reload=False)

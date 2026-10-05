@@ -2,47 +2,154 @@
   {
     "id": "direct_institution_001",
     "question": "Which institution is associated with A General Language Assistant as a Laboratory for Alignment?",
-    "expected_entities": ["Anthropic"],
-    "expected_relationships": ["AFFILIATED_WITH"],
-    "expected_sources": ["https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"],
-    "expected_answer_contains": ["Anthropic"]
+    "expected_entities": [
+      "Anthropic"
+    ],
+    "expected_relationships": [
+      "AFFILIATED_WITH"
+    ],
+    "expected_sources": [
+      "https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"
+    ],
+    "expected_answer_contains": [
+      "Anthropic"
+    ]
   },
   {
     "id": "direct_classification_001",
     "question": "How is A General Language Assistant as a Laboratory for Alignment classified?",
-    "expected_entities": ["alignment_pre_deployment"],
-    "expected_relationships": ["CLASSIFIED_AS"],
-    "expected_sources": ["https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"],
-    "expected_answer_contains": ["alignment_pre_deployment"]
+    "expected_entities": [
+      "alignment_pre_deployment"
+    ],
+    "expected_relationships": [
+      "CLASSIFIED_AS"
+    ],
+    "expected_sources": [
+      "https://www.anthropic.com/research/a-general-language-assistant-as-a-laboratory-for-alignment"
+    ],
+    "expected_answer_contains": [
+      "alignment_pre_deployment"
+    ]
   },
   {
     "id": "institution_paper_001",
     "question": "Which institution is associated with A Mathematical Framework for Transformer Circuits?",
-    "expected_entities": ["Anthropic"],
-    "expected_relationships": ["AFFILIATED_WITH"],
-    "expected_sources": ["https://openalex.org/W4296558812"],
-    "expected_answer_contains": ["Anthropic"]
+    "expected_entities": [
+      "Anthropic"
+    ],
+    "expected_relationships": [
+      "AFFILIATED_WITH"
+    ],
+    "expected_sources": [
+      "https://www.anthropic.com/research/a-mathematical-framework-for-transformer-circuits"
+    ],
+    "expected_answer_contains": [
+      "Anthropic"
+    ]
   },
   {
     "id": "organization_classification_001",
     "question": "How is A hazard analysis framework for code synthesis large language models classified?",
-    "expected_entities": ["testing_and_evaluation"],
-    "expected_relationships": ["CLASSIFIED_AS"],
-    "expected_sources": ["https://openai.com/research/a-hazard-analysis-framework-for-code-synthesis-large-language-models"],
-    "expected_answer_contains": ["testing_and_evaluation"]
+    "expected_entities": [
+      "testing_and_evaluation"
+    ],
+    "expected_relationships": [
+      "CLASSIFIED_AS"
+    ],
+    "expected_sources": [
+      "https://openai.com/research/a-hazard-analysis-framework-for-code-synthesis-large-language-models"
+    ],
+    "expected_answer_contains": [
+      "testing_and_evaluation"
+    ]
   },
   {
     "id": "graph_path_001",
     "question": "Which institution is associated with A Mathematical Framework for Transformer Circuits, classified as interpretability and transparency?",
-    "expected_entities": ["interpretability_and_transparency", "Anthropic"],
-    "expected_relationships": ["CLASSIFIED_AS", "AFFILIATED_WITH"],
-    "expected_sources": ["https://openalex.org/W4296558812"],
-    "expected_answer_contains": ["Anthropic"]
+    "expected_entities": [
+      "interpretability_and_transparency",
+      "Anthropic"
+    ],
+    "expected_relationships": [
+      "CLASSIFIED_AS",
+      "AFFILIATED_WITH"
+    ],
+    "expected_sources": [
+      "https://www.anthropic.com/research/a-mathematical-framework-for-transformer-circuits"
+    ],
+    "expected_answer_contains": [
+      "Anthropic"
+    ]
   },
   {
     "id": "no_answer_001",
     "question": "Which papers in this dataset were published by NASA?",
-    "expected_entities": ["NASA"],
+    "expected_entities": [
+      "NASA"
+    ],
+    "expected_relationships": [],
+    "no_answer": true
+  },
+  {
+    "id": "multi_hop_author_institution_001",
+    "question": "Which institution is the paper written by Lluís Garcia-Pueyo affiliated with?",
+    "question_names_title": false,
+    "expected_entities": [
+      "Meta (United States)"
+    ],
+    "expected_relationships": [
+      "AUTHORED",
+      "AFFILIATED_WITH"
+    ],
+    "expected_sources": [
+      "https://openalex.org/W4367047491"
+    ],
+    "expected_answer_contains": [
+      "Meta"
+    ]
+  },
+  {
+    "id": "multi_hop_author_classification_001",
+    "question": "How is the paper by Narine Kokhlikyan classified?",
+    "question_names_title": false,
+    "expected_entities": [
+      "not_ai_safety"
+    ],
+    "expected_relationships": [
+      "AUTHORED",
+      "CLASSIFIED_AS"
+    ],
+    "expected_sources": [
+      "https://openalex.org/W3164819786"
+    ],
+    "expected_answer_contains": [
+      "not_ai_safety"
+    ]
+  },
+  {
+    "id": "multi_hop_author_institution_002",
+    "question": "Which institution is Tom R. Andersson's paper affiliated with?",
+    "question_names_title": false,
+    "expected_entities": [
+      "DeepMind (United Kingdom)"
+    ],
+    "expected_relationships": [
+      "AUTHORED",
+      "AFFILIATED_WITH"
+    ],
+    "expected_sources": [
+      "https://openalex.org/W4392660138"
+    ],
+    "expected_answer_contains": [
+      "DeepMind"
+    ]
+  },
+  {
+    "id": "no_answer_002",
+    "question": "Which papers did Ada Lovelace author?",
+    "expected_entities": [
+      "Ada Lovelace"
+    ],
     "expected_relationships": [],
     "no_answer": true
   }

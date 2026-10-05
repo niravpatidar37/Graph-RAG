@@ -419,14 +419,14 @@ def architecture(fonts: dict[str, Font]) -> str:
         Box(64 + 0 * (iw + igap), iy, iw, ih, "Sources", ("data/*.md, *.txt", "AI Safety dataset (~9.4k records)", "structured authors / institutions")),
         Box(64 + 1 * (iw + igap), iy, iw, ih, "Chunk + extract", ("entities: dslim/bert-base-NER", "relations: chat model, JSON *", "dataset: fields mapped directly")),
         Box(64 + 2 * (iw + igap), iy, iw, ih, "Embed", ("BAAI/bge-base-en-v1.5", "batched per file", "local GPU or HF Inference")),
-        Box(64 + 3 * (iw + igap), iy, iw, ih, "Upsert", ("MERGE / upsert, stable uuid5 IDs", "re-runs are idempotent", "dataset checkpoint + resume")),
+        Box(64 + 3 * (iw + igap), iy, iw, ih, "Upsert", ("batched UNWIND MERGE, uuid5 IDs", "re-runs are idempotent", "checkpoint per batch + resume")),
     ]
     for a, b in zip(ing, ing[1:]):
         parts.append(arrow(a.x + a.w + 4, a.y + a.h / 2, b.x - 4, b.y + b.h / 2))
 
     # stores
     sy, sh, sw = 372, 112, 330
-    neo = Box(W / 2 - 24 - sw, sy, sw, sh, "Neo4j  ·  graph store", ("(:Chunk)-[:MENTIONS]->(:Entity)", "(:Entity)-[:RELATED {predicate}]->(:Entity)", "(:Chunk)-[:FROM_DOCUMENT]->(:Document)"), PAPER)
+    neo = Box(W / 2 - 24 - sw, sy, sw, sh, "Neo4j  ·  graph store", ("(:Chunk)-[:MENTIONS]->(:Entity)", "(:Entity)-[:RELATED {predicate}]->(:Entity)", "unique constraints + full-text on Entity.name"), PAPER)
     qd = Box(W / 2 + 24, sy, sw, sh, "Qdrant  ·  vector store", ("cosine similarity over chunk vectors", "payload: document, text, entities", "dimension fixed per collection"), PAPER)
     up = ing[3]
     parts.append(arrow(up.cx - 40, up.bottom + 4, neo.x + neo.w - 40, neo.y - 4))
@@ -436,11 +436,11 @@ def architecture(fonts: dict[str, Font]) -> str:
     parts.append(lane(fonts, 40, 532, 1200, 330, "QUERY PLANE", "graph-rag-api  ·  stateless FastAPI workers"))
     qw, qgap, qy, qh = 200, (1152 - 5 * 200) / 4, 582, 124
     q = [
-        Box(64 + 0 * (qw + qgap), qy, qw, qh, "Client", ("GET /  built-in page", "POST /query", "POST /query/stream (SSE)")),
-        Box(64 + 1 * (qw + qgap), qy, qw, qh, "1  Understand", ("embed the question", "NER on the question", "both in parallel")),
-        Box(64 + 2 * (qw + qgap), qy, qw, qh, "2  Retrieve", ("Qdrant: top 2k chunks", "rerank: entity + term overlap", "Neo4j: 1-hop facts")),
-        Box(64 + 3 * (qw + qgap), qy, qw, qh, "3  Answer", ("context capped at 16k chars", "chat model answers only", "from that context")),
-        Box(64 + 4 * (qw + qgap), qy, qw, qh, "4  Respond", ("answer + sources", "graph_facts, entities", "refuse when unsupported")),
+        Box(64 + 0 * (qw + qgap), qy, qw, qh, "Client", ("GET /  evidence-graph UI", "POST /query", "POST /query/stream (SSE)")),
+        Box(64 + 1 * (qw + qgap), qy, qw, qh, "1  Understand", ("embed + NER the question", "link entities (full-text)", "all three in parallel")),
+        Box(64 + 2 * (qw + qgap), qy, qw, qh, "2  Retrieve", ("Qdrant top 3k + graph chunks", "bounded rerank, graph bonus", "Neo4j: 2-hop facts, hub-capped")),
+        Box(64 + 3 * (qw + qgap), qy, qw, qh, "3  Answer", ("facts first, 16k-char cap", "chat model answers only", "from that context")),
+        Box(64 + 4 * (qw + qgap), qy, qw, qh, "4  Respond", ("answer + cited sources", "evidence graph + timings", "refuse when unsupported")),
     ]
     for a, b in zip(q, q[1:]):
         parts.append(arrow(a.x + a.w + 4, a.y + a.h / 2, b.x - 4, b.y + b.h / 2))

@@ -1,7 +1,7 @@
 [project]
 name = "graph-rag"
-version = "0.1.0"
-description = "A small, dependency-light Graph RAG starter"
+version = "0.2.0"
+description = "Graph RAG: vector search plus Neo4j graph traversal, with entity linking, graph-reached documents, and an evidence-graph UI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

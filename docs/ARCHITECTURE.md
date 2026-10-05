@@ -68,15 +68,15 @@ The AI Safety importer uses the dataset's existing OpenAlex-style fields as high
 
 The query plane is synchronous, stateless, and bounded.
 
-1. Validate the request and tenant permissions.
-2. Embed the question.
-3. Search Qdrant for semantic candidates.
-4. Extract query entities.
-5. Expand those entities by one or two Neo4j hops.
-6. Merge and rerank text and graph evidence.
-7. Build a context with source IDs.
-8. Ask the answer model to answer only from that context.
-9. Return the answer and citations.
+1. Validate the request (question length, `limit`). Tenant permissions are a future phase.
+2. In parallel: embed the question, run NER on it, and link the entities it names against the Neo4j full-text index on `Entity.name`. A candidate counts only when most of its own words appear in the question.
+3. Search Qdrant for `3 × limit` semantic candidates.
+4. Retrieve chunks that `MENTION` a linked or NER entity (skipping entities mentioned by more than 25 chunks), score them against the question vector, and merge them with the semantic candidates.
+5. Rerank: cosine similarity plus bounded entity coverage, term coverage, and a fixed bonus for graph-reached chunks.
+6. Expand seed entities up to two directed Neo4j hops: up to 6 edges per node, low-degree neighbours first, no expansion through nodes with more than 40 relationships, 24 facts in total. Seeds are question entities first; entities of the top hits are used only when the question names no graph entity.
+7. Build the context: named entities, then graph facts, then source passages with their IDs (each capped at 1,500 characters, 16k overall).
+8. Ask the answer model to answer only from that context and to cite passage IDs. The prompt fences the context as data.
+9. Return the answer, cited sources (tagged `vector`, `graph`, or `vector+graph`), the evidence graph (nodes and edges), and per-stage timings.
 
 The answer model is never used as the retrieval source of truth.
 
@@ -188,10 +188,13 @@ These are initial targets, not guarantees. Adjust them using production measurem
 src/graph_rag/core.py             local deterministic prototype
 src/graph_rag/dataset.py          AI Safety record mapping
 src/graph_rag/dataset_ingest.py   streaming dataset importer
-src/graph_rag/stores.py            Neo4j and Qdrant adapters
-src/graph_rag/huggingface.py      Hugging Face model adapter
-src/graph_rag/pipeline.py         cloud ingestion and query orchestration
+src/graph_rag/stores.py           Neo4j and Qdrant adapters, entity linking, bounded expansion
+src/graph_rag/huggingface.py      model adapter (HF Inference, local, or OpenAI-compatible chat)
+src/graph_rag/pipeline.py         batched ingestion and query orchestration
 src/graph_rag/api.py              FastAPI application
+src/graph_rag/ui.py               built-in evidence-graph page and its CSP
+evaluation/evaluate.py            golden-set evaluation with a ground-truth check
+evaluation/ui_smoke.py            headless end-to-end test of the built-in page
 ```
 
-The next code change should add ingestion checkpoints and PostgreSQL metadata without changing the public query contract.
+Ingestion checkpoints and batched writes are in place. The next change should add PostgreSQL metadata and per-tenant filters at retrieval time without changing the public query contract.
