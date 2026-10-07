@@ -232,6 +232,7 @@ def test_query_result_returns_graph_sources_and_stage_timings() -> None:
 def test_query_stream_sends_evidence_then_tokens_then_done_with_timings() -> None:
     events = list(_pipeline().query_stream("Where is Alice Johnson's company based?", limit=4))
 
-    assert [event["type"] for event in events] == ["evidence", "token", "token", "done"]
+    assert [event["type"] for event in events] == ["evidence", "token", "token", "citations", "done"]
+    assert events[-2]["verdict"] == "supported" and events[-2]["answer"] == "Seattle [sample.md]"
     assert events[0]["graph"]["edges"]
     assert "first_token_ms" in events[-1]["timings"]

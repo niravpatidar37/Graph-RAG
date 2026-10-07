@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterator, TypedDict, TypeVar
 from langfuse import get_client, observe
 
 from . import tracing
+from .citations import CitationCheck, check_citations, citation_policy, finalize_answer, passages_in_context
 from .core import GraphRAG
 from .huggingface import HuggingFaceModels
 from .production import MetricsCollector, rerank_evidence, should_refuse_answer
@@ -19,6 +20,7 @@ from .stores import Chunk, Neo4jStore, QdrantStore
 T = TypeVar("T")
 
 REFUSAL = "I do not have enough reliable evidence to answer this question."
+WITHDRAWN = "The generated answer was withdrawn because its citations did not support it."
 MAX_SEEDS = 12
 MAX_FACTS = 24
 CONTEXT_CHARS = 16000
@@ -57,6 +59,7 @@ class RetrievalEvidence(TypedDict):
     sources: list[EvidenceSource]
     graph_facts: list[str]
     retrieved_entities: list[str]
+    anchors: list[str]          # entities the question names (graph-linked + NER), for citation checks
     graph: EvidenceGraph
     timings: dict[str, float]
     trace_id: str
@@ -222,17 +225,17 @@ class CloudGraphRAG:
         try:
             evidence = self.retrieve_evidence(question, limit)
             generation_start = perf_counter()
-            answer = self.models.answer(question, evidence["context"]) if evidence["context"].strip() else ""
+            answer, check = self.answer_with_citations(question, evidence)
             timings = {**evidence["timings"], "generation_ms": _ms(perf_counter() - generation_start)}
-            if should_refuse_answer(evidence["context"], answer):
-                answer = REFUSAL
             timings["total_ms"] = _ms(perf_counter() - start)
-            refused = answer == REFUSAL or not answer
+            refused = check.verdict == "refusal"
             tracing.record(
                 input={"question": question},
                 output={"answer": answer},
-                metadata=_answer_metadata(question, answer, refused, limit, timings, mode="sync"),
+                metadata={**_answer_metadata(question, answer, refused, limit, timings, mode="sync"),
+                          "citations": check.metrics(), "citation_policy": citation_policy()},
             )
+            _score_citations(check)
             return {
                 "answer": answer,
                 "sources": evidence["sources"],
@@ -240,6 +243,7 @@ class CloudGraphRAG:
                 "retrieved_entities": evidence["retrieved_entities"],
                 "graph": evidence["graph"],
                 "timings": timings,
+                "citations": check.as_dict(),
                 "trace_id": evidence["trace_id"],
             }
         finally:
@@ -282,16 +286,44 @@ class CloudGraphRAG:
             if first_token is not None:
                 timings["first_token_ms"] = _ms(first_token)
             timings["total_ms"] = _ms(perf_counter() - start)
-            answer = "".join(parts)
+            raw = "".join(parts)
+            # Tokens are already on the client, so the check can't stop them; it replaces them.
+            # The citations event carries the final answer (rewritten citations, or withdrawn).
+            answer, check = self.finalize(question, evidence, raw, refused or should_refuse_answer(evidence["context"], raw))
+            yield {"type": "citations", "answer": answer, "withdrawn": answer == WITHDRAWN,
+                   **check.as_dict()}
             # Recorded before the final yield: a client that disconnects after `done` still gets a complete span.
             tracing.record(
                 input={"question": question},
-                output={"answer": answer},
-                metadata=_answer_metadata(question, answer, refused, limit, timings, mode="stream"),
+                output={"answer": answer, "raw_answer": raw},
+                metadata={**_answer_metadata(question, answer, check.verdict == "refusal", limit, timings, mode="stream"),
+                          "citations": check.metrics(), "citation_policy": citation_policy()},
             )
+            _score_citations(check)
             yield {"type": "done", "timings": timings, "trace_id": evidence["trace_id"]}
         finally:
             self.metrics.timing("query_result_seconds", perf_counter() - start)
+
+    def answer_with_citations(self, question: str, evidence: RetrievalEvidence) -> tuple[str, CitationCheck]:
+        """Generate, then check citations in code. The one answer path for /query and the eval."""
+        raw = self.models.answer(question, evidence["context"]) if evidence["context"].strip() else ""
+        return self.finalize(question, evidence, raw, should_refuse_answer(evidence["context"], raw))
+
+    @staticmethod
+    def finalize(question: str, evidence: RetrievalEvidence, raw: str, refused: bool) -> tuple[str, CitationCheck]:
+        """Apply the citation check and policy to a generated answer.
+
+        refusal -> the canned refusal; supported/repaired -> the answer with only accepted
+        citations; unsupported/uncited -> withdrawn under ``enforce``, flagged and cleaned of
+        invalid citations under ``annotate``.
+        """
+        passages = passages_in_context(evidence["context"], [s["document_id"] for s in evidence["sources"]])
+        check = check_citations(question, raw, passages, evidence["graph_facts"], refused, evidence.get("anchors", []))
+        if check.verdict == "refusal":
+            return REFUSAL, check
+        if check.ok or citation_policy() != "enforce":
+            return finalize_answer(raw, check), check
+        return WITHDRAWN, check
 
     @observe(name="graph-rag.retrieve", as_type="retriever", capture_input=False, capture_output=False)
     def retrieve_evidence(self, question: str, limit: int = 8) -> RetrievalEvidence:
@@ -367,10 +399,19 @@ class CloudGraphRAG:
             "sources": sources,
             "graph_facts": facts,
             "retrieved_entities": seeds,
+            "anchors": list(dict.fromkeys(name for name in [*linked, *question_entities] if _usable_entity(name))),
             "graph": build_graph(seeds, linked, rows, ranked_hits),
             "timings": timings,
             "trace_id": get_client().get_current_trace_id() or "",
         }
+
+
+def _score_citations(check: CitationCheck) -> None:
+    """Online Langfuse scores, so dashboards can track grounding on live traffic, not just evals."""
+    tracing.score("citation_ok", 1.0 if check.ok else 0.0)
+    if check.verdict != "refusal":
+        tracing.score("citation_support", check.support)
+        tracing.score("citation_invalid", float(len(check.invalid) + len(check.facts_invalid)))
 
 
 def _answer_metadata(question: str, answer: str, refused: bool, limit: int, timings: dict[str, float],

@@ -10,7 +10,7 @@ from typing import Any
 
 from langfuse import get_client
 
-from graph_rag.pipeline import CloudGraphRAG
+from graph_rag.pipeline import WITHDRAWN, CloudGraphRAG
 from graph_rag.production import should_refuse_answer
 
 
@@ -82,6 +82,7 @@ def main() -> None:
     report: list[dict[str, object]] = []
     retrieval_rows: list[dict[str, float | None]] = []
     ragas_rows: list[dict[str, object]] = []
+    citation_rows: list[dict[str, Any]] = []
     evaluate_answers = args.answers or args.ragas
     for case in cases:
         # One trace per case, so retrieval, the generated answer and the scores land together.
@@ -106,9 +107,11 @@ def main() -> None:
             answer = ""
             answer_ok: bool | None = None
             answer_error = ""
+            cite = None
             if evaluate_answers and case.get("evaluate_answer", True):
                 try:
-                    answer = pipeline.models.answer(case["question"], context)
+                    # Same path as /query: generate, then check citations and apply the policy.
+                    answer, cite = pipeline.answer_with_citations(case["question"], evidence)
                     answer_ok = all(value in answer.lower() for value in expected_answer)
                 except Exception as error:
                     answer_error = str(error)
@@ -116,16 +119,30 @@ def main() -> None:
             if expected_answer and answer_ok is not None:
                 case_passed = case_passed and answer_ok
             if case.get("no_answer") and answer_ok is not None:
-                case_passed = case_passed and not found_relationships and should_refuse_answer(context, answer)
-            _submit_scores(
-                trace_id=str(evidence.get("trace_id", "")),
-                scores={
-                    "answer_correct": float(answer_ok) if answer_ok is not None else float(case_passed),
-                    "source_recall": float(source_ok) if case.get("expected_sources") else float(case_passed),
-                    "relationship_recall": float(relation_ok),
-                    "case_passed": float(case_passed),
-                },
-            )
+                # Refusing and withdrawing both keep an unsupported answer away from the user.
+                declined = should_refuse_answer(context, answer) or answer == WITHDRAWN
+                case_passed = case_passed and not found_relationships and declined
+            forbidden = [text for text in case.get("forbidden_in_answer", []) if text.lower() in answer.lower()]
+            if forbidden:
+                case_passed = False
+            # citation_correct: an expected source is among the citations the answer finally carries.
+            citation_correct: bool | None = None
+            if cite is not None and case.get("expected_sources") and not case.get("no_answer"):
+                citation_correct = any(source in cite.final_citations for source in case["expected_sources"])
+                case_passed = case_passed and citation_correct
+            if cite is not None:
+                citation_rows.append({"verdict": cite.verdict, "ok": cite.ok, "correct": citation_correct})
+            scores = {
+                "answer_correct": float(answer_ok) if answer_ok is not None else float(case_passed),
+                "source_recall": float(source_ok) if case.get("expected_sources") else float(case_passed),
+                "relationship_recall": float(relation_ok),
+                "case_passed": float(case_passed),
+            }
+            if cite is not None:
+                scores["citation_ok"] = float(cite.ok)
+                if citation_correct is not None:
+                    scores["citation_correct"] = float(citation_correct)
+            _submit_scores(trace_id=str(evidence.get("trace_id", "")), scores=scores)
             passed += int(case_passed)
             report.append({
                 "id": case["id"],
@@ -134,6 +151,10 @@ def main() -> None:
                 "answer_error": answer_error or None,
                 "source_recall": source_ok,
                 "relationship_recall": relation_ok,
+                "citation_verdict": cite.verdict if cite is not None else None,
+                "citation_correct": citation_correct,
+                "final_citations": cite.final_citations if cite is not None else None,
+                "forbidden_in_answer": forbidden or None,
                 "trace_id": str(evidence.get("trace_id", "")),
                 "retrieval": metrics,
             })
@@ -148,6 +169,10 @@ def main() -> None:
             recall = metrics["recall"]
             mrr = metrics["mrr"]
             answer_status = "not evaluated" if answer_ok is None else "ok" if answer_ok else "miss"
+            if cite is not None:
+                answer_status += f" citations={cite.verdict}" + ("" if citation_correct is None else "/correct" if citation_correct else "/WRONG")
+            if forbidden:
+                answer_status += f" FORBIDDEN={forbidden}"
             print(f"{'PASS' if case_passed else 'FAIL'} {case['id']}: precision={precision:.2f} recall={recall:.2f} mrr={mrr:.2f} answer={answer_status}" if precision is not None and recall is not None and mrr is not None else f"{'PASS' if case_passed else 'FAIL'} {case['id']}: no answerable source metric answer={answer_status}")
     summary: dict[str, Any] = {
         "case_pass_rate": passed / max(len(cases), 1),
@@ -156,6 +181,14 @@ def main() -> None:
         "mrr": mean_metric(retrieval_rows, "mrr"),
         "evaluated_cases": len(cases),
     }
+    if citation_rows:
+        verdicts: dict[str, int] = {}
+        for row in citation_rows:
+            verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
+        judged = [row["correct"] for row in citation_rows if row["correct"] is not None]
+        summary["citation_ok_rate"] = sum(row["ok"] for row in citation_rows) / len(citation_rows)
+        summary["citation_accuracy"] = sum(judged) / len(judged) if judged else None
+        summary["citation_verdicts"] = verdicts
     print("Evaluation summary: " + json.dumps(summary))
     ragas_result: dict[str, float] | None = _run_ragas(ragas_rows) if args.ragas else None
     if ragas_result is not None:

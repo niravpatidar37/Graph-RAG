@@ -59,6 +59,7 @@ class QueryResponse(BaseModel):
     retrieved_entities: list[str]
     graph: dict[str, Any] = Field(default_factory=lambda: {"nodes": [], "edges": []})
     timings: dict[str, float] = Field(default_factory=dict)
+    citations: dict[str, Any] = Field(default_factory=dict)
     trace_id: str = ""
 
 
