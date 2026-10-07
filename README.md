@@ -210,15 +210,36 @@ uv run --no-project --with playwright==1.55.0 python evaluation/ui_smoke.py .gra
 
 ## Langfuse Tracing
 
-The query and retrieval pipeline is instrumented with Langfuse `@observe` spans. Tracing is inert until credentials are present, so local development works without it.
+Every query is one Langfuse trace. Tracing stays inert until keys are set, so local development works without it.
 
 ```bash
-LANGFUSE_PUBLIC_KEY=your_public_key
-LANGFUSE_SECRET_KEY=your_secret_key
-LANGFUSE_BASE_URL=https://cloud.langfuse.com   # LANGFUSE_HOST still works but is deprecated in the v4 SDK
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted Langfuse
+LANGFUSE_TRACING_ENVIRONMENT=development       # optional, separates dev/staging/prod
+LANGFUSE_SAMPLE_RATE=1.0                       # optional, fraction of queries traced
+TRACE_CONTENT=metadata                         # or: full
 ```
 
-Each query then appears in Langfuse with nested spans for the query and retrieval stages — question, retrieved evidence, source IDs, graph facts, answer, errors, latency. `/query/stream` currently traces retrieval only, not generation. Don't enable full prompt/source-text capture on confidential data unless your retention and access policy allows it.
+```text
+graph-rag.query                [span]        /query and /query/stream
+├─ graph-rag.retrieve          [retriever]   source IDs + scores, candidate counts, stage timings
+│  ├─ retrieve.embedding / entity_extraction / entity_linking   (parallel, nested via copied context)
+│  ├─ retrieve.vector_search / graph_retrieval / reranking
+│  └─ retrieve.graph_expansion
+└─ llm.answer                  [generation]  model, parameters, token usage, time to first token
+```
+
+`/query` returns `trace_id`, and the `done` event of `/query/stream` carries it too. `evaluation/evaluate.py` runs each golden case in its own trace and attaches `answer_correct`, `source_recall`, `relationship_recall` and `case_passed` scores to it. Ingestion traces `llm.relations` generations.
+
+**What leaves the process.** `TRACE_CONTENT` decides it, in code rather than in the prompt:
+
+| | `metadata` (default) | `full` |
+|---|---|---|
+| Document IDs, scores, counts, timings, model, token usage | yes | yes |
+| Question, prompt, retrieved context, graph facts, answer | **no** | yes, with credential-shaped strings and emails redacted and strings capped at 4,000 characters |
+
+Every `@observe` sets `capture_input=False`/`capture_output=False`, and text reaches a span only through `tracing.record()`, which drops it unless the mode is `full`. Any other value, including a typo, means `metadata`. A Langfuse `mask` adds the redaction in both modes. `tests/test_tracing.py` checks this against an in-memory OpenTelemetry exporter: canary words from the question, passages and answer must not appear in any exported attribute in `metadata` mode. Redaction is pattern-based. It does not catch names or other free-form personal data, so keep `full` for development data.
 
 ## Security model
 

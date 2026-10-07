@@ -84,68 +84,71 @@ def main() -> None:
     ragas_rows: list[dict[str, object]] = []
     evaluate_answers = args.answers or args.ragas
     for case in cases:
-        evidence = pipeline.retrieve_evidence(case["question"], args.limit)
-        context = str(evidence["context"])
-        ranked_source_ids = [str(source["document_id"]) for source in evidence["sources"]]
-        source_ids = set(ranked_source_ids)
-        found_entities = [entity for entity in case.get("expected_entities", []) if entity.lower() in context.lower()]
-        found_relationships = [relation for relation in case.get("expected_relationships", []) if relation.lower() in context.lower()]
-        found_sources = [source for source in case.get("expected_sources", []) if source in source_ids]
-        entity_ok = len(found_entities) == len(case.get("expected_entities", []))
-        relation_ok = len(found_relationships) == len(case.get("expected_relationships", []))
-        source_ok = len(found_sources) == len(case.get("expected_sources", []))
-        metrics = retrieval_metrics(ranked_source_ids, case.get("expected_sources", []))
-        retrieval_rows.append(metrics)
-        case_passed = entity_ok and relation_ok
-        if case.get("expected_sources"):
-            case_passed = case_passed and source_ok
-        expected_answer = [value.lower() for value in case.get("expected_answer_contains", [])]
-        answer = ""
-        answer_ok: bool | None = None
-        answer_error = ""
-        if evaluate_answers and case.get("evaluate_answer", True):
-            try:
-                answer = pipeline.models.answer(case["question"], context)
-                answer_ok = all(value in answer.lower() for value in expected_answer)
-            except Exception as error:
-                answer_error = str(error)
-                print(f"WARN {case['id']}: answer generation unavailable: {error}")
-        if expected_answer and answer_ok is not None:
-            case_passed = case_passed and answer_ok
-        if case.get("no_answer") and answer_ok is not None:
-            case_passed = case_passed and not found_relationships and should_refuse_answer(context, answer)
-        _submit_scores(
-            trace_id=str(evidence.get("trace_id", "")),
-            scores={
-                "answer_correct": float(answer_ok) if answer_ok is not None else float(case_passed),
-                "source_recall": float(source_ok) if case.get("expected_sources") else float(case_passed),
-                "relationship_recall": float(relation_ok),
-                "case_passed": float(case_passed),
-            },
-        )
-        passed += int(case_passed)
-        report.append({
-            "id": case["id"],
-            "passed": case_passed,
-            "answer_correct": answer_ok,
-            "answer_error": answer_error or None,
-            "source_recall": source_ok,
-            "relationship_recall": relation_ok,
-            "trace_id": str(evidence.get("trace_id", "")),
-            "retrieval": metrics,
-        })
-        if answer_ok is not None and expected_answer and not case.get("no_answer"):
-            ragas_rows.append({
-                "question": case["question"],
-                "answer": answer,
-                "ground_truth": " ".join(case["expected_answer_contains"]),
-                "contexts": [str(source["text"]) for source in evidence["sources"]],
+        # One trace per case, so retrieval, the generated answer and the scores land together.
+        with get_client().start_as_current_observation(name="graph-rag.eval-case", as_type="span",
+                                                       metadata={"case_id": case["id"]}):
+            evidence = pipeline.retrieve_evidence(case["question"], args.limit)
+            context = str(evidence["context"])
+            ranked_source_ids = [str(source["document_id"]) for source in evidence["sources"]]
+            source_ids = set(ranked_source_ids)
+            found_entities = [entity for entity in case.get("expected_entities", []) if entity.lower() in context.lower()]
+            found_relationships = [relation for relation in case.get("expected_relationships", []) if relation.lower() in context.lower()]
+            found_sources = [source for source in case.get("expected_sources", []) if source in source_ids]
+            entity_ok = len(found_entities) == len(case.get("expected_entities", []))
+            relation_ok = len(found_relationships) == len(case.get("expected_relationships", []))
+            source_ok = len(found_sources) == len(case.get("expected_sources", []))
+            metrics = retrieval_metrics(ranked_source_ids, case.get("expected_sources", []))
+            retrieval_rows.append(metrics)
+            case_passed = entity_ok and relation_ok
+            if case.get("expected_sources"):
+                case_passed = case_passed and source_ok
+            expected_answer = [value.lower() for value in case.get("expected_answer_contains", [])]
+            answer = ""
+            answer_ok: bool | None = None
+            answer_error = ""
+            if evaluate_answers and case.get("evaluate_answer", True):
+                try:
+                    answer = pipeline.models.answer(case["question"], context)
+                    answer_ok = all(value in answer.lower() for value in expected_answer)
+                except Exception as error:
+                    answer_error = str(error)
+                    print(f"WARN {case['id']}: answer generation unavailable: {error}")
+            if expected_answer and answer_ok is not None:
+                case_passed = case_passed and answer_ok
+            if case.get("no_answer") and answer_ok is not None:
+                case_passed = case_passed and not found_relationships and should_refuse_answer(context, answer)
+            _submit_scores(
+                trace_id=str(evidence.get("trace_id", "")),
+                scores={
+                    "answer_correct": float(answer_ok) if answer_ok is not None else float(case_passed),
+                    "source_recall": float(source_ok) if case.get("expected_sources") else float(case_passed),
+                    "relationship_recall": float(relation_ok),
+                    "case_passed": float(case_passed),
+                },
+            )
+            passed += int(case_passed)
+            report.append({
+                "id": case["id"],
+                "passed": case_passed,
+                "answer_correct": answer_ok,
+                "answer_error": answer_error or None,
+                "source_recall": source_ok,
+                "relationship_recall": relation_ok,
+                "trace_id": str(evidence.get("trace_id", "")),
+                "retrieval": metrics,
             })
-        precision = metrics["precision"]
-        recall = metrics["recall"]
-        mrr = metrics["mrr"]
-        answer_status = "not evaluated" if answer_ok is None else "ok" if answer_ok else "miss"
-        print(f"{'PASS' if case_passed else 'FAIL'} {case['id']}: precision={precision:.2f} recall={recall:.2f} mrr={mrr:.2f} answer={answer_status}" if precision is not None and recall is not None and mrr is not None else f"{'PASS' if case_passed else 'FAIL'} {case['id']}: no answerable source metric answer={answer_status}")
+            if answer_ok is not None and expected_answer and not case.get("no_answer"):
+                ragas_rows.append({
+                    "question": case["question"],
+                    "answer": answer,
+                    "ground_truth": " ".join(case["expected_answer_contains"]),
+                    "contexts": [str(source["text"]) for source in evidence["sources"]],
+                })
+            precision = metrics["precision"]
+            recall = metrics["recall"]
+            mrr = metrics["mrr"]
+            answer_status = "not evaluated" if answer_ok is None else "ok" if answer_ok else "miss"
+            print(f"{'PASS' if case_passed else 'FAIL'} {case['id']}: precision={precision:.2f} recall={recall:.2f} mrr={mrr:.2f} answer={answer_status}" if precision is not None and recall is not None and mrr is not None else f"{'PASS' if case_passed else 'FAIL'} {case['id']}: no answerable source metric answer={answer_status}")
     summary: dict[str, Any] = {
         "case_pass_rate": passed / max(len(cases), 1),
         "precision_at_k": mean_metric(retrieval_rows, "precision"),
@@ -159,6 +162,7 @@ def main() -> None:
         summary["ragas"] = ragas_result
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps({"summary": summary, "cases": report}, indent=2), encoding="utf-8")
+    get_client().flush()  # once, after every case span has ended
 
 
 def _submit_scores(trace_id: str, scores: dict[str, float]) -> None:
@@ -167,7 +171,6 @@ def _submit_scores(trace_id: str, scores: dict[str, float]) -> None:
     client = get_client()
     for name, value in scores.items():
         client.create_score(name=name, value=value, trace_id=trace_id, data_type="NUMERIC")
-    client.flush()
 
 
 def _run_ragas(rows: list[dict[str, object]]) -> dict[str, float]:
