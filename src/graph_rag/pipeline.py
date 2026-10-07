@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any, Callable, Iterator, TypedDict, TypeVar
 
 from langfuse import get_client, observe
 
+from . import tracing
 from .core import GraphRAG
 from .huggingface import HuggingFaceModels
 from .production import MetricsCollector, rerank_evidence, should_refuse_answer
@@ -180,6 +182,7 @@ class CloudGraphRAG:
     def from_env(cls) -> "CloudGraphRAG":
         settings = Settings.from_env()
         settings.validate_cloud()
+        tracing.init_tracing()  # before the first @observe call, so the redaction mask is installed
         return cls(
             models=HuggingFaceModels(settings.hf_token, settings.hf_embedding_model, settings.hf_ner_model, settings.hf_llm_model, settings.llm_base_url, settings.local_models),
             graph=Neo4jStore(settings.neo4j_uri, settings.neo4j_username, settings.neo4j_password),
@@ -212,7 +215,7 @@ class CloudGraphRAG:
         self.vectors.upsert_batch([(chunk, vector) for (chunk, _), vector in zip(items, vectors, strict=True)])
 
     # ------------------------------------------------------------------ query
-    @observe(name="graph-rag.query")
+    @observe(name="graph-rag.query", capture_input=False, capture_output=False)
     def query_result(self, question: str, limit: int = 8) -> dict[str, object]:
         self.metrics.increment("queries")
         start = perf_counter()
@@ -224,6 +227,12 @@ class CloudGraphRAG:
             if should_refuse_answer(evidence["context"], answer):
                 answer = REFUSAL
             timings["total_ms"] = _ms(perf_counter() - start)
+            refused = answer == REFUSAL or not answer
+            tracing.record(
+                input={"question": question},
+                output={"answer": answer},
+                metadata=_answer_metadata(question, answer, refused, limit, timings, mode="sync"),
+            )
             return {
                 "answer": answer,
                 "sources": evidence["sources"],
@@ -231,10 +240,12 @@ class CloudGraphRAG:
                 "retrieved_entities": evidence["retrieved_entities"],
                 "graph": evidence["graph"],
                 "timings": timings,
+                "trace_id": evidence["trace_id"],
             }
         finally:
             self.metrics.timing("query_result_seconds", perf_counter() - start)
 
+    @observe(name="graph-rag.query", capture_input=False, capture_output=False)
     def query_stream(self, question: str, limit: int = 8) -> Iterator[dict[str, object]]:
         """Stream the answer as it generates: one evidence event, token events, then done.
 
@@ -256,22 +267,33 @@ class CloudGraphRAG:
             }
             generation_start = perf_counter()
             first_token: float | None = None
-            if not evidence["context"].strip():
+            parts: list[str] = []
+            refused = not evidence["context"].strip()
+            if refused:
+                parts.append(REFUSAL)
                 yield {"type": "token", "text": REFUSAL}
             else:
                 for delta in self.models.answer_stream(question, evidence["context"]):
                     if first_token is None:
                         first_token = perf_counter() - generation_start
+                    parts.append(delta)
                     yield {"type": "token", "text": delta}
             timings = {**evidence["timings"], "generation_ms": _ms(perf_counter() - generation_start)}
             if first_token is not None:
                 timings["first_token_ms"] = _ms(first_token)
             timings["total_ms"] = _ms(perf_counter() - start)
-            yield {"type": "done", "timings": timings}
+            answer = "".join(parts)
+            # Recorded before the final yield: a client that disconnects after `done` still gets a complete span.
+            tracing.record(
+                input={"question": question},
+                output={"answer": answer},
+                metadata=_answer_metadata(question, answer, refused, limit, timings, mode="stream"),
+            )
+            yield {"type": "done", "timings": timings, "trace_id": evidence["trace_id"]}
         finally:
             self.metrics.timing("query_result_seconds", perf_counter() - start)
 
-    @observe(name="graph-rag.retrieve")
+    @observe(name="graph-rag.retrieve", as_type="retriever", capture_input=False, capture_output=False)
     def retrieve_evidence(self, question: str, limit: int = 8) -> RetrievalEvidence:
         timings: dict[str, float] = {}
         start = perf_counter()
@@ -279,7 +301,9 @@ class CloudGraphRAG:
         def timed(name: str, fn: Callable[[], T]) -> T:
             began = perf_counter()
             try:
-                return fn()
+                # One child span per stage, so the Langfuse timeline shows where the time went.
+                with get_client().start_as_current_observation(name=f"retrieve.{name}", as_type="span"):
+                    return fn()
             finally:
                 elapsed = perf_counter() - began
                 self.metrics.timing(f"{name}_seconds", elapsed)
@@ -287,9 +311,14 @@ class CloudGraphRAG:
 
         self.graph.ensure_schema()
         with ThreadPoolExecutor(max_workers=3) as executor:
-            embedding_future = executor.submit(timed, "embedding", lambda: self.models.embed(question))
-            entities_future = executor.submit(timed, "entity_extraction", lambda: self.models.entities(question))
-            linking_future = executor.submit(timed, "entity_linking", lambda: self.graph.link_entities(question))
+            # Worker threads don't inherit contextvars; give each its own copy so the stage spans
+            # nest under this retrieval span instead of starting orphan traces.
+            def submit(name: str, fn: Callable[[], Any]):
+                return executor.submit(contextvars.copy_context().run, timed, name, fn)
+
+            embedding_future = submit("embedding", lambda: self.models.embed(question))
+            entities_future = submit("entity_extraction", lambda: self.models.entities(question))
+            linking_future = submit("entity_linking", lambda: self.graph.link_entities(question))
             question_vector = embedding_future.result()
             question_entities = [name for name in entities_future.result() if _usable_entity(name)]
             linked = [row["name"] for row in linking_future.result()]
@@ -314,6 +343,25 @@ class CloudGraphRAG:
             for hit in ranked_hits
         ]
         timings["retrieval_ms"] = _ms(perf_counter() - start)
+        tracing.record(
+            input={"question": question},
+            output={"context": context, "graph_facts": facts, "entities": {"linked": linked, "question": question_entities, "seeds": seeds}},
+            metadata={
+                # IDs, scores and counts only: safe to export in metadata mode.
+                "sources": [
+                    {"document_id": s["document_id"], "retrieval": s["retrieval"], "score": round(s["score"], 4),
+                     "similarity": round(s["similarity"], 4)}
+                    for s in sources
+                ],
+                "counts": {
+                    "vector_hits": len(hits), "graph_chunk_ids": len(graph_chunk_ids), "candidates": len(candidates),
+                    "ranked": len(ranked_hits), "linked_entities": len(linked), "question_entities": len(question_entities),
+                    "seeds": len(seeds), "facts": len(facts), "context_chars": len(context),
+                },
+                "limit": limit,
+                "timings_ms": dict(timings),
+            },
+        )
         return {
             "context": context,
             "sources": sources,
@@ -323,6 +371,19 @@ class CloudGraphRAG:
             "timings": timings,
             "trace_id": get_client().get_current_trace_id() or "",
         }
+
+
+def _answer_metadata(question: str, answer: str, refused: bool, limit: int, timings: dict[str, float],
+                     mode: str) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "limit": limit,
+        "question_chars": len(question),
+        "answer_chars": len(answer),
+        "refused": refused,
+        "cited_passages": answer.count("["),
+        "timings_ms": dict(timings),
+    }
 
 
 def _ms(seconds: float) -> float:

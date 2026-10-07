@@ -3,9 +3,29 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from huggingface_hub import InferenceClient
+from langfuse import observe
+
+from . import tracing
+
+ANSWER_PARAMETERS = {"max_tokens": 250, "temperature": 0.1}
+RELATION_PARAMETERS = {"max_tokens": 500, "temperature": 0}
+
+
+def _usage(response: Any) -> dict[str, int] | None:
+    """OpenAI-style usage -> Langfuse usage_details; None when the server didn't report it."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    details = {
+        "input": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "output": int(getattr(usage, "completion_tokens", 0) or 0),
+    }
+    details["total"] = int(getattr(usage, "total_tokens", 0) or 0) or details["input"] + details["output"]
+    return details
 
 
 def _flatten(vector: Any) -> list[float]:
@@ -100,19 +120,23 @@ class HuggingFaceModels:
         self._entity_cache[text] = ordered
         return ordered
 
+    @observe(name="llm.relations", as_type="generation", capture_input=False, capture_output=False)
     def relations(self, text: str) -> list[dict[str, Any]]:
         prompt = (
             "Extract factual relationships from the text. Return only a JSON array of objects "
             'with keys "source", "predicate", "target", and "confidence". '
             f"Text: {text}"
         )
+        messages = [{"role": "user", "content": prompt}]
         response = self._retry(lambda: self.chat_client.chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            model=self.llm_model,
-            max_tokens=500,
-            temperature=0,
+            messages=messages, model=self.llm_model, **RELATION_PARAMETERS,
         ))
         content = response.choices[0].message.content or "[]"
+        tracing.record(
+            input=messages, output=content, generation=True, model=self.llm_model,
+            model_parameters=RELATION_PARAMETERS, usage_details=_usage(response),
+            metadata={"text_chars": len(text), "output_chars": len(content)},
+        )
         match = re.search(r"\[.*\]", content, re.DOTALL)
         if not match:
             return []
@@ -121,36 +145,60 @@ class HuggingFaceModels:
         except json.JSONDecodeError:
             return []
 
+    @observe(name="llm.answer", as_type="generation", capture_input=False, capture_output=False)
     def answer(self, question: str, context: str) -> str:
+        messages = self._answer_messages(question, context)
         response = self._retry(lambda: self.chat_client.chat_completion(
-            messages=[
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-                {"role": "user", "content": answer_user_prompt(question, context)},
-            ],
-            model=self.llm_model,
-            max_tokens=250,
-            temperature=0.1,
+            messages=messages, model=self.llm_model, **ANSWER_PARAMETERS,
         ))
-        return response.choices[0].message.content or "I could not generate an answer."
+        answer = response.choices[0].message.content or "I could not generate an answer."
+        tracing.record(
+            input=messages, output=answer, generation=True, model=self.llm_model,
+            model_parameters=ANSWER_PARAMETERS, usage_details=_usage(response),
+            metadata={"context_chars": len(context), "answer_chars": len(answer), "streamed": False},
+        )
+        return answer
 
+    @observe(name="llm.answer", as_type="generation", capture_input=False, capture_output=False)
     def answer_stream(self, question: str, context: str) -> Iterator[str]:
         """Yield answer text as it generates. No retry: a mid-stream failure can't be replayed transparently."""
+        messages = self._answer_messages(question, context)
         stream = self.chat_client.chat_completion(
-            messages=[
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-                {"role": "user", "content": answer_user_prompt(question, context)},
-            ],
+            messages=messages,
             model=self.llm_model,
-            max_tokens=250,
-            temperature=0.1,
             stream=True,
+            stream_options={"include_usage": True},  # servers that ignore it just send no usage chunk
+            **ANSWER_PARAMETERS,
         )
-        for chunk in stream:
-            if not chunk.choices:  # trailing usage/stop chunks carry no choices
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        parts: list[str] = []
+        usage: dict[str, int] | None = None
+        first_token_at: datetime | None = None
+        try:
+            for chunk in stream:
+                usage = _usage(chunk) or usage
+                if not chunk.choices:  # trailing usage/stop chunks carry no choices
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    if first_token_at is None:
+                        first_token_at = datetime.now(timezone.utc)
+                    parts.append(delta)
+                    yield delta
+        finally:
+            # finally, so an aborted stream (client disconnect, server error) still records what was generated.
+            answer = "".join(parts)
+            tracing.record(
+                input=messages, output=answer, generation=True, model=self.llm_model,
+                model_parameters=ANSWER_PARAMETERS, usage_details=usage, completion_start_time=first_token_at,
+                metadata={"context_chars": len(context), "answer_chars": len(answer), "streamed": True},
+            )
+
+    @staticmethod
+    def _answer_messages(question: str, context: str) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+            {"role": "user", "content": answer_user_prompt(question, context)},
+        ]
 
     @staticmethod
     def _retry(operation, attempts: int = 4):

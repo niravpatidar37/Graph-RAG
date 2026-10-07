@@ -1,6 +1,7 @@
 .venv/
 .env
 .env.*
+!.env.example
 .graph-rag/
 __pycache__/
 *.py[cod]
