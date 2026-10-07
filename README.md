@@ -208,6 +208,34 @@ uv run graph-rag-api   # separate terminal
 uv run --no-project --with playwright==1.55.0 python evaluation/ui_smoke.py .graph-rag "Which institution is the paper written by Lluís Garcia-Pueyo affiliated with?"
 ```
 
+## Citation checking
+
+The model is asked to cite passage IDs in brackets. That instruction is not a control, so every answer is checked in code before it leaves the API (`src/graph_rag/citations.py`, no model in the loop):
+
+| Check | Rule |
+|---|---|
+| Valid | A cited ID must be a passage that was actually placed in the context. Anything else, such as an invented URL or an ID an injected passage asked for, is removed. A cited graph fact `[s -[REL]-> o]` must be a fact that was retrieved. |
+| On subject | A cited passage counts only if it is about something the question names: its ID or title is a question entity, a retrieved fact links it to one, or its text mentions one. |
+| Supported | Every term the answer adds beyond the question must appear in the cited passages or in graph facts about them. |
+| Coverage | At least 80% of all the answer's content words must appear in that evidence or among the question entities. This catches claims smuggled in through the question. |
+| Repair | If the model cited the wrong passage but another in-context, on-subject passage supports the answer, that passage is cited instead. |
+
+Outcomes are `supported`, `repaired`, `refusal`, `unsupported` and `uncited`. With `CITATION_POLICY=enforce` (the default) the last two are withdrawn and replaced by a fixed message. `annotate` keeps them, flagged and stripped of invalid citations. Any other value means `enforce`. Markdown images, markdown links and bare URLs outside citations are always removed, so a client that renders markdown can't be turned into an exfiltration channel.
+
+`/query` returns the verdict in `citations`. `/query/stream` can't take back tokens it has already sent, so it ends with a `citations` event carrying the final answer, and the page replaces the streamed draft with it and shows the verdict. Each trace gets `citation_ok`, `citation_support` and `citation_invalid` scores. Its metadata holds the verdict and counts, never the answer's words.
+
+Measured on llama3.2, scoring the same generations before and after the check (10 golden + 8 adversarial questions in `evaluation/adversarial_questions.json`):
+
+| | Raw model output | After the check |
+|---|---|---|
+| Answerable: answer correct | 9/9 | 9/9 |
+| Answerable: cites the expected source | 6/9 | 9/9 |
+| Answerable: cites an ID that was never retrieved | 1/9 | 0/9 |
+| No-answer and attack cases declined | 6/7 | 7/7 |
+| Forbidden text (injected URL or claim) in the final answer | 1/18 | 0/18 |
+
+Limits: the check is lexical, not entailment. It can't see negation, quantifiers or paraphrase, and a claim built only from words that occur in the evidence passes. Eighteen cases show direction, not significance. Treat it as a guard against fabricated and misattributed citations, not as proof that an answer is true.
+
 ## Langfuse Tracing
 
 Every query is one Langfuse trace. Tracing stays inert until keys are set, so local development works without it.

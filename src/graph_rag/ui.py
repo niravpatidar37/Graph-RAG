@@ -90,6 +90,9 @@ button { font: inherit; cursor: pointer; }
 .facts li { margin-bottom: 3px; overflow-wrap: anywhere; }
 .facts code { font: 600 .74rem ui-monospace, monospace; color: var(--green); }
 .error { color: #9b2c2c; }
+.verdict { margin: 8px 0 0; font-size: .82rem; line-height: 1.4; }
+.verdict.ok { color: var(--green); }
+.verdict.warn { color: #9b2c2c; font-weight: 600; }
 """
 
 BODY = """
@@ -108,6 +111,7 @@ BODY = """
     <section class="panel">
       <h2>Answer</h2>
       <div id="answer" class="muted">Ask a question to see a grounded, cited answer.</div>
+      <p id="verdict" class="verdict" role="status" hidden></p>
       <ul class="sources" id="sources"></ul>
     </section>
     <section class="panel">
@@ -130,6 +134,7 @@ SCRIPT = r"""
 const $ = id => document.getElementById(id);
 const SVG = 'http://www.w3.org/2000/svg';
 const form = $('query-form'), input = $('question'), button = $('submit'), answerEl = $('answer');
+const verdictEl = $('verdict');
 const sourcesEl = $('sources'), factsEl = $('facts'), graphEl = $('graph'), selectionEl = $('selection');
 const STAGES = [
   ['understand', 'embed + NER + link', '#17624f', t => Math.max(t.embedding_ms || 0, t.entity_extraction_ms || 0, t.entity_linking_ms || 0)],
@@ -212,6 +217,23 @@ function renderAnswer() {
     last = match.index + match[0].length;
   }
   flush(state.answer.length);
+}
+// The server checks citations after generation; its verdict replaces the streamed draft.
+const VERDICTS = {
+  supported: ['ok', 'Citations checked: each claim appears in a cited source.'],
+  repaired: ['ok', 'Citations corrected: the model cited the wrong source, so it was replaced with the one that supports the answer.'],
+  refusal: ['muted', 'Not enough evidence in the index to answer.'],
+  unsupported: ['warn', 'its citations did not support it.'],
+  uncited: ['warn', 'it cited no retrieved source.'],
+};
+function renderVerdict(data) {
+  let [kind, text] = VERDICTS[data.verdict] || ['warn', 'its citations could not be checked.'];
+  if (kind === 'warn') text = (data.withdrawn ? 'Answer withdrawn: ' : 'Unverified answer: ') + text;
+  const removed = (data.invalid || []).length + (data.facts_invalid || []).length;
+  if (removed) text += ' Removed ' + removed + ' citation' + (removed > 1 ? 's' : '') + ' to sources that were never retrieved.';
+  verdictEl.className = 'verdict ' + kind;
+  verdictEl.textContent = text;
+  verdictEl.hidden = false;
 }
 function focusSource(id) {
   const card = [...sourcesEl.children].find(li => li.dataset.id === id);
@@ -384,6 +406,7 @@ async function ask(question) {
   state = { sources: [], graph: { nodes: [], edges: [] }, answer: '' };
   selected = { ids: [], node: null };
   answerEl.className = 'muted'; answerEl.textContent = 'Retrieving evidence\u2026';
+  verdictEl.hidden = true; verdictEl.textContent = '';
   renderSources(); renderFacts(); renderGraph(); renderTimings(null);
   selectionEl.textContent = 'Click a node to trace its facts and sources.';
   try {
@@ -404,6 +427,10 @@ async function ask(question) {
           renderSources(); renderFacts(); renderGraph(); renderTimings(data.timings);
           answerEl.textContent = '';
         } else if (data.type === 'token') { state.answer += data.text; renderAnswer(); }
+        else if (data.type === 'citations') {
+          state.answer = data.answer; renderAnswer(); renderVerdict(data);
+          if (data.withdrawn) answerEl.className = 'muted';
+        }
         else if (data.type === 'done') renderTimings(data.timings);
         else if (data.type === 'error') throw new Error(data.detail || 'Query failed');
       }

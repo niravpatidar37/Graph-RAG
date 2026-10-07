@@ -33,6 +33,9 @@ def exporter(monkeypatch: pytest.MonkeyPatch):
     LangfuseResourceManager._instances.clear()
     tracing.reset_for_tests()
     spans = InMemorySpanExporter()
+    spans.scores = []  # type: ignore[attr-defined]
+    # Scores go through Langfuse's HTTP ingestion, not OTel; capture them instead of hitting the fake host.
+    monkeypatch.setattr(tracing, "score", lambda name, value: spans.scores.append((name, value)))  # type: ignore[attr-defined]
     tracing.init_tracing(public_key="pk-lf-test", secret_key="sk-lf-test", base_url="http://127.0.0.1:9",
                          span_exporter=spans, flush_at=1)
     yield spans
@@ -82,6 +85,9 @@ def test_metadata_mode_exports_no_question_passage_fact_or_answer_text(exporter)
     assert "langfuse.observation.input" not in root and "langfuse.observation.output" not in root
     assert root["langfuse.observation.metadata.trace_content"] == "metadata"
     assert result["answer"] == "Seattle [sample.md]"   # the gate changes what is traced, not what is answered
+    assert ("citation_ok", 1.0) in exporter.scores
+    assert root["langfuse.observation.metadata.citations"]  # verdict + counts are metadata...
+    assert "Seattle" not in str(root["langfuse.observation.metadata.citations"])  # ...the asserted terms are not
 
 
 def test_all_spans_share_one_trace_and_stage_spans_nest_under_retrieval(exporter) -> None:

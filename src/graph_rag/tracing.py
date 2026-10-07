@@ -105,6 +105,13 @@ def record(*, input: Any = None, output: Any = None, metadata: dict[str, Any] | 
         client.update_current_span(**fields)
 
 
+def score(name: str, value: float) -> None:
+    """Attach a numeric score to the current trace; a no-op when tracing is off."""
+    trace_id = current_trace_id()
+    if trace_id:
+        get_client().create_score(name=name, value=float(value), trace_id=trace_id, data_type="NUMERIC")
+
+
 def current_trace_id() -> str:
     return get_client().get_current_trace_id() or ""
 
